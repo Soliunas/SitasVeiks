@@ -1,0 +1,19 @@
+{
+  "name": "sitasveiks",
+  "version": "1.0.0",
+  "description": "",
+  "type": "module",
+  "main": "index.js",
+  "scripts": {
+    "server": "nodemon ./dist",
+    "ts": "tsc --watch",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "Soliunas",
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^20.3.2",
+    "nodemon": "^2.0.22"
+  }
+}
