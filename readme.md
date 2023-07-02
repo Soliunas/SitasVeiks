@@ -1,4 +1,4 @@
-# server-class-task
+# SitasVeiks - Vartotojų API
 
 # Vartotojų API - CRUD
 
