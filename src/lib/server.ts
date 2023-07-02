@@ -1,52 +1,54 @@
 import http, { IncomingMessage, ServerResponse } from 'node:http';
 import { file } from './file.js';
+import { StringDecoder } from 'node:string_decoder';
 
-type Server = {
-    init: (api: object) => void;
-    // httpServer: typeof http.createServer;
-    httpServer: any;
-    api: object;
-    readBody: (req: IncomingMessage) => Promise<string>
-}
+const validatedUserData = (data: any) => {
+  if (!data.name || typeof data.name !== 'string' || data.name.trim() === '') {
+    throw new Error('No name provided');
+  }
+  if (!data.email || typeof data.email !== 'string' || data.email.trim() === '') {
+    throw new Error('No email provided');
+  }
+  if (!data.email.includes('@')) {
+    throw new Error('Invalid email format');
+  }
+  if (!data.password || typeof data.password !== 'string' || data.password.trim() === '') {
+    throw new Error('No password provided');
+  }
+  if (data.password.length < 8) {
+    throw new Error('Password must contain at least 8 characters long');
+  }
+  if (!/[a-zA-Z]/.test(data.password)) {
+    throw new Error('Password must contain at least one letter');
+  }
+};
 
-const server = {} as Server;
+// const getUserByEmail = async (email: string) => {
+//     const [err, user] = await file.read('users', `${email}.json`);
+//     if (err) {
+//         return null;
+//     }
+//     return { name: user.name, email: user.email };
+// };
 
-server.readBody = async (req: IncomingMessage) => {
-    let body = "";
-    return new Promise((resolve, reject) => {
-        req.on('data', function(chunk) {
-            body += chunk;
-        });
-        req.on('end', function() {
-            resolve(body);
-        });
-    });
-}
-
-server.httpServer = http.createServer(async (req: IncomingMessage, res: ServerResponse) => {
-    const socket = req.socket as any;
-    const encryption = socket.encryption as any;
-    const ssl = encryption !== undefined ? 's' : '';
-
-    const baseURL = `http${ssl}://${req.headers.host}`;
-    const parsedURL = new URL(req.url ?? '', baseURL);
-    const httpMethod = req.method ? req.method.toLowerCase() : 'get';
-    const trimmedPath = parsedURL.pathname
+export const serverLogic = async (req: IncomingMessage, res: ServerResponse) => {
+    const baseUrl = `http://${req.headers.host}`;
+    const parsedUrl = new URL(req.url ?? '', baseUrl);
+    const trimmedPath = parsedUrl.pathname
         .replace(/^\/+|\/+$/g, '')
-        .replace(/\/\/+/g, '/');
+        .replace(/\/+/g, '/');
 
-    const textFileExtensions = ['css', 'js', 'svg', 'webmanifest'];
-    const binaryFileExtensions = ['png', 'jpg', 'jpeg', 'webp', 'ico', 'eot', 'ttf', 'woff', 'woff2', 'otf'];
-    const fileExtension = trimmedPath.slice(trimmedPath.lastIndexOf('.') + 1);
+    const textFileExtensions = ['css', 'js'];
+    const binaryFileExtensions = ['png', 'jpg', 'ico', 'webp', 'jpeg'];
+    const extension = (trimmedPath.includes('.') ? trimmedPath.split('.').at(-1) : '') as string;
 
-    const isTextFile = textFileExtensions.includes(fileExtension);
-    const isBinaryFile = binaryFileExtensions.includes(fileExtension);
-    const isAPI = trimmedPath.startsWith('api/');
-    const isPage = !isTextFile && !isBinaryFile && !isAPI;
 
-    // type Mimes = { [key: string]: string };
+    const isTextFile = textFileExtensions.includes(extension);
+    const isBinaryFile = binaryFileExtensions.includes(extension);
+    const isApi = trimmedPath.startsWith('api/');
+    const isPage = !isTextFile && !isBinaryFile && !isApi;
+    
     type Mimes = Record<string, string>;
-
     const MIMES: Mimes = {
         html: 'text/html',
         css: 'text/css',
@@ -63,89 +65,159 @@ server.httpServer = http.createServer(async (req: IncomingMessage, res: ServerRe
         woff2: 'font/woff2',
         woff: 'font/woff',
         ttf: 'font/ttf',
+        gif: 'image/gif',
         webmanifest: 'application/manifest+json',
     };
 
-    let responseContent: string | Buffer = 'ERROR: neturiu tai ko tu nori...';
+    let responseContent: string | Buffer = '';
+    let buffer = '';
+    const stringDecoder = new StringDecoder('utf-8');
 
-    if (isTextFile) {
-        const [err, msg] = await file.readPublic(trimmedPath);
-        res.writeHead(err ? 404 : 200, {
-            'Content-Type': MIMES[fileExtension],
-            'cache-control': `max-age=60`,
-        });
-        if (err) {
-            responseContent = '404';
-        } else {
-            responseContent = msg;
-        }
-    }
+    req.on('data', (data) => {
+        buffer += stringDecoder.write(data);
+    });
 
-    if (isBinaryFile) {
-        const [err, msg] = await file.readPublicBinary(trimmedPath);
-        res.writeHead(err ? 404 : 200, {
-            'Content-Type': MIMES[fileExtension],
-            'cache-control': `max-age=60`,
-        });
-        if (err) {
-            responseContent = msg;
-        } else {
-            responseContent = msg;
-        }
-    }
-
-    if (isAPI) {
-        const controllerName = trimmedPath.replace('api/', '').match(/([a-z\-]+)\/{0,1}(.*)/);
-        const controller = server.api[controllerName[1]] || null;
-        const param = controllerName[2] || null;
-        let data = null;
-        let msg = 'Not found';
-
-        if (controller !== null) {
-            if (httpMethod === 'get' && param !== null) {
-                [data, msg] = await controller.get(param);
-            } else if (httpMethod ===  'post' && param === null) {
-                [data, msg] = await controller.create(JSON.parse(await server.readBody(req)));
-            } else if (httpMethod === 'put' && param !== null) {
-                data = controller.update(param);
+    req.on('end', async () => {
+        buffer += stringDecoder.end();
+        
+        if (isTextFile) {
+            const [err, msg] = await file.readPublic(trimmedPath);
+    
+            if (err) {
+                res.statusCode = 404;
+                responseContent = `Error: could not find file: ${trimmedPath}`;
+            } else {
+                res.writeHead(200, {
+                    'Content-Type': MIMES[extension],
+                })
+                responseContent = msg;
             }
         }
-
-        res.writeHead(!data ? 404 : 200, {
-            'Content-Type': MIMES.json,
-        });
-
-        responseContent = data instanceof Object ? JSON.stringify(data) : JSON.stringify({
-            status: data ? true : false,
-            message: msg
-        });
-    }
-
-    if (isPage) {
-        let fileResponse = await file.read('../pages', trimmedPath + '.html');
-        let [err, msg] = fileResponse;
-
-        if (err) {
-            fileResponse = await file.read('../pages', '404.html');
-            err = fileResponse[0];
-            msg = fileResponse[1];
+    
+        if (isBinaryFile) {const [err, msg] = await file.readPublicBinary(trimmedPath);
+    
+            if (err) {
+                res.statusCode = 404;
+                responseContent = `Error: could not find file: ${trimmedPath}`;
+            } else {
+                res.writeHead(200, {
+                    'Content-Type': MIMES[extension],
+                })
+                responseContent = msg;
+            }
         }
+    
+        if (isApi) {
+            const jsonData = buffer ? JSON.parse(buffer) : {};
 
-        res.writeHead(err ? 404 : 200, {
-            'Content-Type': MIMES.html,
-        });
+            try {
+                validatedUserData(jsonData);
+            } catch (error: any) {
+                res.statusCode = 400;
+                responseContent = error.message as string;
+                res.end(responseContent);
+                return;
+            }
+            // if (trimmedPath === 'api/users' && req.method === 'GET') {
+            //     const email = parsedUrl.searchParams.get('email');
 
-        responseContent = msg as string;
-    }
+            //     if (!email) {
+            //         res.statusCode = 400;
+            //         responseContent = 'Email parameter is missing';
+            //         res.end(responseContent);
+            //         return;
+            //     }
 
-    return res.end(responseContent);
-});
+            //     try {
+            //         const user = await getUserByEmail(email);
+            //         if (user) {
+            //             responseContent = JSON.stringify(user);
+            //         } else {
+            //             responseContent = 'User not found';
+            //         }
+            //     } catch (error: any) {
+            //         responseContent = error.message;
+            //         res.statusCode = 500;
+            //     }
+            // } else {
+            //     const jsonData = buffer ? JSON.parse(buffer) : {};
 
-server.init = (api: object) => {
-    server.api = api;
-    server.httpServer.listen(3960, () => {
-        console.log('Serveris sukasi  ant http://localhost:3960');
+            //     try {
+            //         validatedUserData(jsonData);
+            //     } catch (error: any) {
+            //         res.statusCode = 400;
+            //         responseContent = error.message as string;
+            //         res.end(responseContent);
+            //         return;
+            //     }
+            // }
+        
+            if (req.method === 'POST') {
+                const [err] = await file.create('users', jsonData.email + '.json', jsonData);
+                if (err) {
+                    responseContent = 'User already exists, dublicate email';
+                    // responseContent = msg.toString();
+                } else {
+                    responseContent = 'User Created';
+                }
+            } else if (req.method === 'GET') {
+                 const [err, msg] = await file.read('users', jsonData.email + '.json');
+                if (err) {
+                    responseContent = msg.toString();
+                } else {
+                    responseContent = jsonData;
+                }
+                // try {
+                //     const user = await getUserByEmail(jsonData.email);
+                //     if (user) {
+                //         responseContent = JSON.stringify(user);
+                //     } else {
+                //         responseContent = 'User not found';
+                //     }                 
+                // } catch (error: any) {
+                //     responseContent = error.message;
+                //     res.statusCode = 500;
+                // }
+            } else if (req.method === 'PUT') {
+                const [err, msg] = await file.update('users', jsonData.email + '.json', jsonData);
+                if (err) {
+                    responseContent = msg.toString();
+                } else {
+                    responseContent = 'User Updated';
+                }
+            } else if (req.method === 'DELETE') {
+                const [err, msg] = await file.delete('users', jsonData.email + '.json');
+                if (err) {
+                    responseContent = msg.toString();
+                } else {
+                    responseContent = 'User Deleted';
+                }
+            }
+        }
+    
+        if (isPage) {
+            res.writeHead(200, {
+                'Content-Type': MIMES.html,
+            });
+            responseContent = 'PAGE CONTENT';
+        }
+    
+        res.end(responseContent);
     });
 };
 
-export { server };
+export const httpServer = http.createServer(serverLogic);
+
+export const init = () => {
+    httpServer.listen(3016, () => {
+        console.log(`Server running at http://localhost:3016`);    
+    })
+    
+}
+
+export const server = {
+    init,
+    httpServer,
+};
+
+export default server;
